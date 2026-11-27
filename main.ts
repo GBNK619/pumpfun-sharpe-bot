@@ -29,9 +29,9 @@ const RUNUP_MIN = 1.25;
 /** Dip: price must be at most this fraction of the window high. */
 const DIP_MAX = 0.85;
 /** Newest-half buy SOL must be at least this multiple of newest-half sell SOL. */
-const FLOW_MIN = 1.5;
+const FLOW_MIN = 2.0;
 /** Distinct buyers in the buffer required for entry. */
-const MIN_BUYERS = 4;
+const MIN_BUYERS = 6;
 /** Stabilisation: price must have bounced at least this far off the window low. */
 const BOUNCE_MIN = 0.02;
 /** Of the last 5 trades, at least this many must be buys. */
@@ -48,6 +48,11 @@ const TRAIL_DROP = 0.08;
 const TRAIL_PEAK_MIN = 0.06;
 /** Stale exit: sell after this many slots without TP/SL/trailing. */
 const STALE_SLOTS = 1200;
+/** After an exit, do not re-enter the same mint for this many slots: the
+ *  dip that just stopped us out (or paid us) is usually still falling, and
+ *  re-buying it every batch is pure churn — each round trip costs ~2.5%
+ *  plus fees, so churn alone turns a small edge negative. */
+const ENTRY_COOLDOWN_SLOTS = 3000;
 /** Slippage allowance on fills, in bps. */
 const SLIPPAGE_BPS = 500;
 
@@ -78,6 +83,9 @@ interface Held {
   entrySlot: number;
 }
 const held = new Map<string, Held>();
+
+/** Slot of the last exit (sell sent) per mint, for the re-entry cooldown. */
+const lastExit = new Map<string, number>();
 
 function priceOf(vq: bigint, vt: bigint): number {
   if (vt === 0n) return 0;
@@ -207,6 +215,7 @@ await runBot({
           token_amount: pos.token_amount,
           max_slippage_bps: SLIPPAGE_BPS,
         });
+        lastExit.set(mark.mint, state.slot);
       }
     }
 
@@ -235,6 +244,8 @@ await runBot({
       }
       if (state.committedPositionCount() >= state.hello.caps.max_open_positions) continue;
       if (held.has(mint)) continue; // a buy for this mint is already pending
+      const cooledUntil = lastExit.get(mint);
+      if (cooledUntil !== undefined && state.slot - cooledUntil < ENTRY_COOLDOWN_SLOTS) continue;
       if (!entrySignal(state, mint)) continue;
       const cap = state.maxBuyLamports(mint);
       const size = tranche < cap ? tranche : cap;
